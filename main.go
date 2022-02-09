@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -45,10 +46,17 @@ func devReset() {
 	devClearInputBuffer()
 }
 
-func devCmdCall(cmd string, timeout int) (string, error) {
-	timeout = timeout * (1000 / 200)
+func devCmdCall(cmd string, timeout int, requestUserConfirm bool) (string, error) {
 	arr := strings.Split(cmd, ",")
 	log.Println("devCmdCall:", arr[0], "...")
+	if requestUserConfirm {
+		timeout += 30
+		fmt.Println(`=== Waiting for User Confirmation... ===
+Please press the "BOOT" button on the device in 30 seconds,
+and hold it for one second.
+=====================================================`)
+	}
+	timeout = timeout * (1000 / 200)
 
 	devClearInputBuffer()
 	_, err := serialPort.Write([]byte(cmd + "\n"))
@@ -95,7 +103,7 @@ func devCmdCall(cmd string, timeout int) (string, error) {
 
 func devGetPublicKey(usage string) (ssh.PublicKey, error) {
 	// Get 32-byte ed25519 public key
-	ret, err := devCmdCall("+PUBKEY,ed25519-"+usage, 10)
+	ret, err := devCmdCall("+PUBKEY,ed25519-"+usage, 10, false)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +124,7 @@ func devGetPublicKey(usage string) (ssh.PublicKey, error) {
 }
 
 func devSign(usage string, data []byte) (*ssh.Signature, error) {
-	ret, err := devCmdCall(fmt.Sprintf("+SIGN,ed25519-%s,%s", usage, hex.EncodeToString(data)), 80)
+	ret, err := devCmdCall(fmt.Sprintf("+SIGN,ed25519-%s,%s", usage, hex.EncodeToString(data)), 80, true)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +147,7 @@ func devFormat(entropy []byte) error {
 	if len(entropy) != 32 {
 		return fmt.Errorf("entropy must be 32 bytes")
 	}
-	ret, err := devCmdCall(fmt.Sprintf("+FORMAT,%s", hex.EncodeToString(entropy)), 120)
+	ret, err := devCmdCall(fmt.Sprintf("+FORMAT,%s", hex.EncodeToString(entropy)), 120, true)
 	if err != nil {
 		return err
 	}
@@ -154,7 +162,7 @@ func devSetupUserSeed(pwdHash []byte) error {
 	if len(pwdHash) != 32 {
 		return fmt.Errorf("pwdHash must be 32 bytes")
 	}
-	ret, err := devCmdCall(fmt.Sprintf("+USERSEED,%s", hex.EncodeToString(pwdHash)), 120)
+	ret, err := devCmdCall(fmt.Sprintf("+USERSEED,%s", hex.EncodeToString(pwdHash)), 120, true)
 	if err != nil {
 		return err
 	}
@@ -163,6 +171,26 @@ func devSetupUserSeed(pwdHash []byte) error {
 		return fmt.Errorf("dev error: %s", ret)
 	}
 	return nil
+}
+
+func devWebPwd(domain string) ([]byte, error) {
+	usage := "webpwd-" + strings.ReplaceAll(domain, ",", "-")
+	if len(usage) > 128 {
+		return nil, fmt.Errorf("usage too long")
+	}
+	ret, err := devCmdCall(fmt.Sprintf("+WEBPWD,%s", usage), 120, true)
+	if err != nil {
+		return nil, err
+	}
+	arr := strings.Split(ret, ",")
+	if arr[0] != "+OK" {
+		return nil, fmt.Errorf("dev error: %s", ret)
+	}
+	rawPwd, err := hex.DecodeString(arr[1])
+	if err != nil {
+		return nil, err
+	}
+	return rawPwd, nil
 }
 
 type MyAgent struct {
@@ -258,7 +286,7 @@ func AskPasswordAndSetupUserSeed() {
 	}
 	fmt.Println("Please wait...")
 	// Agron2 hash the password
-	pwdHash := argon2.IDKey(pwd, []byte("44KeyGenerateUserPasswordHash!"), 20, 128*1024, 4, 32)
+	pwdHash := argon2.IDKey(pwd, []byte("44KeyGenerateUserPasswordHash!"), 50, 512*1024, 4, 32)
 	err = devSetupUserSeed(pwdHash)
 	if err != nil {
 		log.Fatal("unable to setup user seed:", err)
@@ -289,14 +317,27 @@ func RunSSHAgentWin() {
 	}
 }
 
-func test() {
-	privKey := ed25519.NewKeyFromSeed(make([]byte, 32))
-	ret := ed25519.Sign(privKey, []byte("11111111"))
-	fmt.Println(hex.EncodeToString(privKey))
-	fmt.Println(hex.EncodeToString(ret))
+func GenWebPwd() {
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Println("Please enter the domain name (e.g. example.com):")
+	scanner.Scan()
+	domain := scanner.Text()
+	if len(domain) < 3 {
+		log.Fatal("domain name must be at least 3 characters long")
+	}
+	rawPwd, err := devWebPwd(domain)
+	if err != nil {
+		log.Fatal("unable to generate web password:", err)
+	}
+	for i := 0; i < 4; i++ {
+		buf := rawPwd[i*8 : i*8+8]
+		fmt.Println(base64.StdEncoding.EncodeToString(buf) + fmt.Sprintf("!%d", i+1))
+	}
+
 }
 
 func main() {
+	optWebPwd := flag.Bool("webpwd", false, "generate web password")
 	optFormat := flag.Bool("format", false, "Format the device, clear all data and generate a new seed for keys")
 	flag.Parse()
 	if *optSerialPort == "" {
@@ -319,6 +360,9 @@ func main() {
 	if err != nil {
 		log.Fatal("unable to open serial port:", err)
 	}
+	// Clear RTS and DTR
+	serialPort.SetDTR(false)
+	serialPort.SetRTS(false)
 	serialPort.SetReadTimeout(time.Millisecond * 200)
 	devReset()
 	if *optFormat {
@@ -336,6 +380,10 @@ func main() {
 		} else {
 			log.Fatal("unable to get public key:", err)
 		}
+	}
+	if *optWebPwd {
+		GenWebPwd()
+		return
 	}
 	// Print public key in authorized_keys format
 	fmt.Println("\n=== Public key in ssh format, add following line to ~/.ssh/authorized_keys on your remote servers ===")
