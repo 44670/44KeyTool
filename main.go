@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Microsoft/go-winio"
 	"go.bug.st/serial"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/ed25519"
@@ -294,29 +293,6 @@ func AskPasswordAndSetupUserSeed() {
 	fmt.Println("User seed setup successfully!")
 }
 
-func RunSSHAgentWin() {
-
-	// Start a ssh agent on windows named pipe
-	var pipeCfg = &winio.PipeConfig{}
-	pipe, err := winio.ListenPipe(`\\.\pipe\openssh-ssh-agent`, pipeCfg)
-	if err != nil {
-		log.Fatal("Failed to listen on pipe:", err)
-	}
-	defer pipe.Close()
-	log.Println("SSH agent started...")
-	for {
-		conn, err := pipe.Accept()
-		if err != nil {
-			log.Fatal("Failed to accept pipe connection:", err)
-		}
-		go func() {
-			// Handle the connection
-			err := agent.ServeAgent(myAgent, conn)
-			log.Println("Agent conn closed:", err)
-		}()
-	}
-}
-
 func GenWebPwd() {
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("Please enter the domain name (e.g. example.com):")
@@ -389,5 +365,5 @@ func main() {
 	fmt.Println("\n=== Public key in ssh format, add following line to ~/.ssh/authorized_keys on your remote servers ===")
 	fmt.Println(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pubKey))), " my-44key")
 	fmt.Println("=== End of public key ===\n")
-	RunSSHAgentWin()
+	RunSSHServer()
 }
