@@ -301,14 +301,18 @@ func GenWebPwd() {
 	if len(domain) < 3 {
 		log.Fatal("domain name must be at least 3 characters long")
 	}
-	rawPwd, err := devWebPwd(domain)
+	fmt.Println("Index (default 0):")
+	scanner.Scan()
+	idx := scanner.Text()
+	if idx == "" {
+		idx = "0"
+	}
+	rawPwd, err := devWebPwd(fmt.Sprintf("%s-%s", idx, domain))
 	if err != nil {
 		log.Fatal("unable to generate web password:", err)
 	}
-	for i := 0; i < 4; i++ {
-		buf := rawPwd[i*8 : i*8+8]
-		fmt.Println(base64.StdEncoding.EncodeToString(buf) + fmt.Sprintf("!%d", i+1))
-	}
+
+	fmt.Printf("%s!%s\n", base64.StdEncoding.EncodeToString(rawPwd[:9]), idx)
 
 }
 
